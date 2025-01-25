@@ -8,7 +8,7 @@ class Comment(BaseModel):
 app = FastAPI()
 
 # Load the trained model
-model = joblib.load('fake_comment_detector.pkl')
+model = joblib.load('model.pkl')
 
 @app.get("/")
 def read_root():
