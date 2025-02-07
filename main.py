@@ -26,6 +26,7 @@ async def detect_fake_comment(comment: Comment):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     
+    
 @app.post("/detect-spam-email")
 async def detect_spam_email(email: Email):
     try:
