@@ -5,6 +5,8 @@ import joblib
 class Comment(BaseModel):
     comment: str
 
+class Email(BaseModel):
+    email: str
 app = FastAPI()
 
 # Load the trained model
