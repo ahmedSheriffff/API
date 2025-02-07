@@ -9,6 +9,7 @@ app = FastAPI()
 
 # Load the trained model
 model = joblib.load('model.pkl')
+email_model=joblib.load('')
 
 @app.get("/")
 def read_root():
@@ -22,7 +23,17 @@ async def detect_fake_comment(comment: Comment):
         return {"result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
+    
+@app.post("/detect-spam-email")
+async def detect_spam_email(email: Email):
+    try:
+        prediction = email_model.predict([email.email])[0]
+        result = "Spam" if prediction == 1 else "Not Spam"
+        return {"result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
