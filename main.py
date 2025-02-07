@@ -36,7 +36,7 @@ app = FastAPI()
 # Load the trained model and vectorizer
 vectorizer = joblib.load('vectorizer.pkl')
 model = joblib.load('model.pkl')
-email_model = joblib.load('model.pkl')
+email_model = joblib.load('email-model.pkl')
 
 @app.get("/")
 def read_root():
