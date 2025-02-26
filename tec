@@ -1,0 +1,2 @@
+C:\Users\LENOVO>curl -X POST "http://127.0.0.1:8000/detect_fake_comment" -H "Content-Type: application/json" -d "{\"comment\": \"This is a test comment\"}"
+C:\Users\LENOVO>curl -X POST "http://127.0.0.1:8000/detect_fake_comment" -H "Content-Type: application/json" -d "{\"comment\": \"1\"}"

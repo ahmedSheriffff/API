@@ -19,90 +19,312 @@ if not API_KEY:
     raise ValueError("API_KEY must be set in environment variables.")
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
 
-# Configure logging
+
+
+
+
+
+
+
+import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.metrics import accuracy_score, classification_report
+import os
+import logging
+
+# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Rate Limiting to prevent abuse (10 requests per minute per user)
-limiter = Limiter(key_func=get_remote_address)
-
-# Initialize FastAPI
 app = FastAPI()
 
-# Register rate limiter exception handler
-app.state.limiter = limiter
-app.add_exception_handler(_rate_limit_exceeded_handler)
-app.add_middleware(SlowAPIMiddleware)
+# Paths to the pre-trained model and vectorizer
+MODEL_PATH = "model.pkl"
+VECTORIZER_PATH = "vectorizer.pkl"
+DATASET_PATH = "fake_comments_dataset.csv"
 
-# Enable CORS (Allow frontend integration)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Change to frontend domain in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Load trained models and vectorizers
-model_files = ["vectorizer.pkl", "model.pkl", "email_vectorizer.pkl", "email_model.pkl"]
-models = {}
-
-for file in model_files:
-    try:
-        models[file] = joblib.load(file)
-        logger.info(f"{file} loaded successfully.")
-    except FileNotFoundError:
-        logger.error(f"Missing model file: {file}")
-        raise RuntimeError(f"{file} is missing. Ensure all .pkl files are present.")
-    except Exception as e:
-        logger.error(f"Error loading {file}: {e}")
-        raise RuntimeError("Failed to load machine learning models.")
-
-# Input models
 class CommentRequest(BaseModel):
-    comment: str = Field(..., min_length=3, max_length=500, description="Text of the comment")
+    comment: str
 
-class EmailRequest(BaseModel):
-    email: str = Field(..., min_length=5, max_length=1000, description="Email content")
+class CommentResponse(BaseModel):
+    comment: str
+    is_fake: bool
 
-# API Key Validation
-def verify_api_key(api_key: str = Security(api_key_header)):
-    if api_key != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+class CommentLabelRequest(BaseModel):
+    comment: str
+    label: int
 
-@app.get("/", tags=["Root"])
-def read_root():
-    return {"message": "Welcome to the Fake Comment & Spam Email Detector API"}
+# Load the pre-trained model and vectorizer
+if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+    model = joblib.load(MODEL_PATH)
+    vectorizer = joblib.load(VECTORIZER_PATH)
+else:
+    raise FileNotFoundError("Model and vectorizer files not found. Please ensure 'model.pkl' and 'vectorizer.pkl' are in the directory.")
 
-@app.post("/detect-fake-comment", tags=["Fake Comment Detection"])
-@limiter.limit("10/minute")
-async def detect_fake_comment(request: Request, comment: CommentRequest, api_key: str = Depends(verify_api_key)):
+@app.post("/detect_fake_comment", response_model=CommentResponse)
+async def detect_fake_comment(request: CommentRequest):
     try:
-        if not API_KEY:
-            raise ValueError("API_KEY must be set in environment variables.")
-        comment_vector = models["vectorizer.pkl"].transform([comment.comment])
-        prediction = models["model.pkl"].predict(comment_vector)[0]
-        result = "Fake Comment" if prediction == 1 else "Real Comment"
-        return {"result": result}
+        if not request.comment.strip():
+            logger.warning("Empty comment received")
+            raise HTTPException(status_code=400, detail="Comment cannot be empty.")
+        transformed_comment = vectorizer.transform([request.comment])
+        prediction = model.predict(transformed_comment)
+        result = bool(prediction[0])
+        logger.info(f"Comment: {request.comment} -> Predicted: {result}")
+        return CommentResponse(comment=request.comment, is_fake=result)
+    except ValueError as e:
+        logger.error(f"ValueError: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while processing the comment.")
     except Exception as e:
-        logger.error(f"Error detecting fake comment: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        logger.error(f"Unhandled Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
-@app.post("/detect-spam-email", tags=["Spam Email Detection"])
-@limiter.limit("10/minute")
-async def detect_spam_email(request: Request, email: EmailRequest, api_key: str = Depends(verify_api_key)):
+@app.post("/add_comment")
+async def add_comment(request: CommentLabelRequest):
     try:
-        if not API_KEY:
-            raise ValueError("API_KEY must be set in environment variables.")
-        email_vector = models["email_vectorizer.pkl"].transform([email.email])
-        prediction = models["email_model.pkl"].predict(email_vector)[0]
-        result = "Spam" if prediction == 1 else "Not Spam"
-        return {"result": result}
+        if not request.comment.strip():
+            logger.warning("Empty comment received for addition")
+            raise HTTPException(status_code=400, detail="Comment cannot be empty.")
+        
+        new_data = pd.DataFrame({"comment": [request.comment], "label": [request.label]})
+        if os.path.exists(DATASET_PATH):
+            df = pd.read_csv(DATASET_PATH)
+            df = pd.concat([df, new_data], ignore_index=True)
+        else:
+            df = new_data
+        df.to_csv(DATASET_PATH, index=False)
+        
+        logger.info(f"Added new comment and retraining model: {request.comment}")
+        train_model()
+        
+        return {"message": "Comment added and model retrained successfully."}
+    except ValueError as e:
+        logger.error(f"ValueError: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while adding the comment.")
     except Exception as e:
-        logger.error(f"Error detecting spam email: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        logger.error(f"Unhandled Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+# Training function
+def train_model():
+    if os.path.exists(DATASET_PATH):
+        df = pd.read_csv(DATASET_PATH)
+
+        if "comment" not in df.columns or "label" not in df.columns:
+            raise ValueError("Dataset must contain 'comment' and 'label' columns.")
+
+        # Balance the dataset
+        fake_comments = df[df["label"] == 1]
+        real_comments = df[df["label"] == 0]
+
+        min_samples = min(len(fake_comments), len(real_comments))
+
+        df_balanced = pd.concat([
+            fake_comments.sample(min_samples, random_state=42),
+            real_comments.sample(min_samples, random_state=42)
+        ])
+
+        # Train the model with balanced data
+        vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2))  # Use n-grams
+        X = vectorizer.fit_transform(df_balanced["comment"])
+        y = df_balanced["label"]
+
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Hyperparameter tuning using Grid Search
+        param_grid = {
+            'n_estimators': [100, 200, 300],
+            'max_features': ['sqrt', 'log2'],  # Corrected values
+            'max_depth': [4, 5, 6, 7, 8],
+            'criterion': ['gini', 'entropy']
+        }
+
+        grid_search = GridSearchCV(RandomForestClassifier(random_state=42), param_grid, cv=5, error_score='raise')
+        grid_search.fit(X_train, y_train)
+        best_model = grid_search.best_estimator_
+
+        y_pred = best_model.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        print(f"Model trained with accuracy: {accuracy:.2f}")
+        print(classification_report(y_test, y_pred, zero_division=0))
+
+        joblib.dump(best_model, MODEL_PATH)
+        joblib.dump(vectorizer, VECTORIZER_PATH)
+    else:
+        raise FileNotFoundError("Dataset file not found. Please add 'fake_comments_dataset.csv'.")
 
 if __name__ == "__main__":
     import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+
+
+
+new 
+
+
+import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from sklearn.feature_extraction.text import TfidfVectorizer
+import os
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# List of valid API keys
+VALID_API_KEYS = ["actual_api_key_1", "actual_api_key_2"]
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if api_key not in VALID_API_KEYS:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return await call_next(request)
+
+# Initialize FastAPI application with middleware
+app = FastAPI()
+app.add_middleware(APIKeyMiddleware)
+
+# Paths to the pre-trained model and vectorizer
+MODEL_PATH = "model.pkl"
+VECTORIZER_PATH = "vectorizer.pkl"
+
+class CommentRequest(BaseModel):
+    comment: str
+
+class CommentResponse(BaseModel):
+    comment: str
+    is_fake: bool
+
+# Load the pre-trained model and vectorizer
+if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+    try:
+        model = joblib.load(MODEL_PATH)
+        vectorizer = joblib.load(VECTORIZER_PATH)
+        logger.info("Model and vectorizer loaded successfully.")
+    except Exception as e:
+        logger.error(f"Error loading model or vectorizer: {str(e)}")
+        raise
+else:
+    raise FileNotFoundError("Model and vectorizer files not found. Please ensure 'model.pkl' and 'vectorizer.pkl' are in the directory.")
+
+@app.post("/detect_fake_comment", response_model=CommentResponse)
+async def detect_fake_comment(request: CommentRequest):
+    try:
+        if not request.comment.strip():
+            logger.warning("Empty comment received")
+            raise HTTPException(status_code=400, detail="Comment cannot be empty.")
+        transformed_comment = vectorizer.transform([request.comment])
+        prediction = model.predict(transformed_comment)
+        result = bool(prediction[0])
+        logger.info(f"Comment: {request.comment} -> Predicted: {result}")
+        return CommentResponse(comment=request.comment, is_fake=result)
+    except ValueError as e:
+        logger.error(f"ValueError: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while processing the comment.")
+    except Exception as e:
+        logger.error(f"Unhandled Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+
+email 
+
+import joblib
+from fastapi import FastAPI, HTTPException, Request
+from starlette.middleware.base import BaseHTTPMiddleware
+from pydantic import BaseModel
+import os
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# List of valid API keys
+VALID_API_KEYS = ["actual_api_key_1", "actual_api_key_2"]
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if api_key not in VALID_API_KEYS:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return await call_next(request)
+
+# Initialize FastAPI application with middleware
+app = FastAPI()
+app.add_middleware(APIKeyMiddleware)
+
+# Paths to the pre-trained model and vectorizer
+MODEL_PATH = "email_model.pkl"
+VECTORIZER_PATH = "email_vectorizer.pkl"
+
+class EmailRequest(BaseModel):
+    email: str
+
+class EmailResponse(BaseModel):
+    email: str
+    is_spam: bool
+
+# Load the pre-trained model and vectorizer
+if os.path.exists(MODEL_PATH) and os.path.exists(VECTORIZER_PATH):
+    try:
+        spam_model = joblib.load(MODEL_PATH)
+        spam_vectorizer = joblib.load(VECTORIZER_PATH)
+        logger.info("Model and vectorizer loaded successfully.")
+    except Exception as e:
+        logger.error(f"Error loading model or vectorizer: {str(e)}")
+        raise
+else:
+    raise FileNotFoundError("Spam model and vectorizer files not found. Please ensure 'email_model.pkl' and 'email_vectorizer.pkl' are in the directory.")
+
+@app.post("/detect_spam_email", response_model=EmailResponse)
+async def detect_spam_email(request: EmailRequest):
+    try:
+        if not request.email.strip():
+            logger.warning("Empty email received")
+            raise HTTPException(status_code=400, detail="Email cannot be empty.")
+        logger.info(f"Received email: {request.email}")
+        
+        # Transform the email
+        try:
+            transformed_email = spam_vectorizer.transform([request.email])
+            logger.info(f"Transformed email shape: {transformed_email.shape}")
+        except Exception as e:
+            logger.error(f"Error transforming email: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error transforming email.")
+        
+        # Predict using the model
+        try:
+            prediction = spam_model.predict(transformed_email)
+        except Exception as e:
+            logger.error(f"Error predicting spam: {str(e)}")
+            raise HTTPException(status_code=500, detail="Error predicting spam.")
+        
+        result = bool(prediction[0])
+        logger.info(f"Email: {request.email} -> Predicted: {result}")
+        return EmailResponse(email=request.email, is_spam=result)
+    except ValueError as e:
+        logger.error(f"ValueError: {str(e)}")
+        raise HTTPException(status_code=500, detail="An error occurred while processing the email.")
+    except Exception as e:
+        logger.error(f"Unhandled Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
