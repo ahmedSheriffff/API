@@ -746,3 +746,594 @@ async def add_comment(request: CommentLabelRequest):
 
 
     
+import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+import os
+import logging
+import re
+import secrets
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# API keys dataset
+API_KEYS_FILE = "api_keys.csv"
+
+# Generate and store API keys
+def generate_api_key():
+    return secrets.token_hex(32)
+
+def store_api_key(api_key):
+    """Store a unique API key in a CSV file."""
+    if os.path.exists(API_KEYS_FILE):
+        df = pd.read_csv(API_KEYS_FILE)
+    else:
+        df = pd.DataFrame(columns=["api_key"])
+    
+    new_entry = pd.DataFrame({"api_key": [api_key]})
+    df = pd.concat([df, new_entry], ignore_index=True)
+    df.to_csv(API_KEYS_FILE, index=False)
+    logger.info(f"Stored API key: {api_key}")
+
+def validate_api_key(api_key):
+    """Check if the API key is in the dataset."""
+    if not os.path.exists(API_KEYS_FILE):
+        return False
+    
+    df = pd.read_csv(API_KEYS_FILE)
+    return api_key in df["api_key"].values
+
+# Generate and store a new API key
+new_key = generate_api_key()
+store_api_key(new_key)
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if not validate_api_key(api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return await call_next(request)
+
+# Initialize FastAPI application with middleware
+app = FastAPI()
+app.add_middleware(APIKeyMiddleware)
+
+# Paths to model and vectorizer files
+COMMENT_MODEL_PATH = "fake_comment_model.pkl"
+COMMENT_VECTORIZER_PATH = "vectorizer.pkl"
+SPAM_MODEL_PATH = "emailmodel.pkl"
+SPAM_VECTORIZER_PATH = "spam_vectorizer.pkl"
+REVIEW_MODEL_PATH = "reviewmodel.pkl"
+REVIEW_VECTORIZER_PATH = "review_vectorizer.pkl"
+
+def load_model_and_vectorizer(model_path, vectorizer_path, model_name):
+    if not os.path.exists(model_path) or not os.path.exists(vectorizer_path):
+        logger.error(f"{model_name} files missing")
+        raise FileNotFoundError(f"{model_name} files missing")
+    try:
+        model = joblib.load(model_path)
+        vectorizer = joblib.load(vectorizer_path)
+        return model, vectorizer
+    except Exception as e:
+        logger.error(f"Error loading {model_name}: {str(e)}")
+        raise RuntimeError(f"Failed to load {model_name}: {str(e)}")
+
+# Load models
+comment_model, comment_vectorizer = load_model_and_vectorizer(COMMENT_MODEL_PATH, COMMENT_VECTORIZER_PATH, "Comment Detection")
+spam_model, spam_vectorizer = load_model_and_vectorizer(SPAM_MODEL_PATH, SPAM_VECTORIZER_PATH, "Spam Detection")
+review_model, review_vectorizer = load_model_and_vectorizer(REVIEW_MODEL_PATH, REVIEW_VECTORIZER_PATH, "Review Detection")
+
+class CommentRequest(BaseModel):
+    comment: str
+
+class CommentResponse(BaseModel):
+    comment: str
+    is_fake: bool
+
+@app.post("/detect_fake_comment", response_model=CommentResponse)
+async def detect_fake_comment(request: CommentRequest):
+    try:
+        transformed_comment = comment_vectorizer.transform([request.comment])
+        prediction = comment_model.predict(transformed_comment)
+        result = bool(prediction[0])
+        return CommentResponse(comment=request.comment, is_fake=result)
+    except Exception as e:
+        logger.error(f"Error processing comment: {str(e)}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+# Run the FastAPI app
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+    
+    
+    
+    
+    
+    import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+import os
+import logging
+import secrets
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# API Key Storage File
+API_KEYS_FILE = "api_keys.csv"
+
+# Generate and store API keys securely
+def generate_api_key():
+    return secrets.token_hex(32)
+
+def store_api_key(api_key):
+    """Store a unique API key in a CSV file."""
+    if os.path.exists(API_KEYS_FILE):
+        df = pd.read_csv(API_KEYS_FILE)
+    else:
+        df = pd.DataFrame(columns=["api_key"])
+
+    if api_key not in df["api_key"].values:
+        new_entry = pd.DataFrame({"api_key": [api_key]})
+        df = pd.concat([df, new_entry], ignore_index=True)
+        df.to_csv(API_KEYS_FILE, index=False)
+        logger.info(f"Stored API key: {api_key}")
+
+def validate_api_key(api_key):
+    """Check if the API key exists in the dataset."""
+    if not os.path.exists(API_KEYS_FILE):
+        return False
+
+    df = pd.read_csv(API_KEYS_FILE)
+    return api_key in df["api_key"].values
+
+# Generate and store a new API key
+new_key = generate_api_key()
+store_api_key(new_key)
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if not validate_api_key(api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return await call_next(request)
+
+# Initialize FastAPI application with middleware
+app = FastAPI()
+app.add_middleware(APIKeyMiddleware)
+
+# Paths to model and vectorizer files
+REVIEW_MODEL_PATH = "reviewmodel.pkl"
+REVIEW_VECTORIZER_PATH = "review_vectorizer.pkl"
+REVIEW_DATASET_PATH = "review_dataset.csv"
+
+# Ensure vectorizer retraining if misaligned
+def retrain_vectorizer():
+    if not os.path.exists(REVIEW_DATASET_PATH):
+        logger.error("Review dataset missing. Cannot retrain vectorizer.")
+        raise FileNotFoundError("Review dataset is required for retraining.")
+
+    dataset = pd.read_csv(REVIEW_DATASET_PATH)
+
+    vectorizer = TfidfVectorizer(max_features=1768)
+    vectorizer.fit(dataset["review"])
+    joblib.dump(vectorizer, REVIEW_VECTORIZER_PATH)
+
+    logger.info(f"Vectorizer retrained with {len(vectorizer.get_feature_names_out())} features.")
+
+# Load models and vectorizers
+def load_model_and_vectorizer(model_path, vectorizer_path, model_name):
+    if not os.path.exists(model_path) or not os.path.exists(vectorizer_path):
+        logger.warning(f"{model_name} files missing, attempting vectorizer retraining.")
+        retrain_vectorizer()
+
+    try:
+        model = joblib.load(model_path)
+        vectorizer = joblib.load(vectorizer_path)
+
+        # Verify alignment
+        sample_text = ["Test review"]
+        test_vectorized = vectorizer.transform(sample_text)
+        expected_features = 1768
+
+        if test_vectorized.shape[1] != expected_features:
+            logger.error(f"{model_name} feature mismatch: Found {test_vectorized.shape[1]}, expected {expected_features}")
+            retrain_vectorizer()
+            vectorizer = joblib.load(vectorizer_path)
+
+        return model, vectorizer
+
+    except Exception as e:
+        logger.error(f"Error loading {model_name}: {str(e)}")
+        raise RuntimeError(f"Failed to load {model_name}: {str(e)}")
+
+# Load models
+review_model, review_vectorizer = load_model_and_vectorizer(REVIEW_MODEL_PATH, REVIEW_VECTORIZER_PATH, "Review Detection")
+
+class ReviewRequest(BaseModel):
+    review: str
+
+class ReviewResponse(BaseModel):
+    review: str
+    is_fake: bool
+
+@app.post("/detect_fake_review", response_model=ReviewResponse)
+async def detect_fake_review(request: ReviewRequest):
+    try:
+        if not request.review.strip():
+            raise HTTPException(status_code=400, detail="Review cannot be empty.")
+
+        # Transform the review
+        transformed_review = review_vectorizer.transform([request.review])
+
+        # Validate feature count
+        expected_features = 1768
+        if transformed_review.shape[1] != expected_features:
+            logger.error(f"Feature mismatch detected: Expected {expected_features}, Found {transformed_review.shape[1]}")
+            retrain_vectorizer()
+            transformed_review = review_vectorizer.transform([request.review])
+
+        # Predict with probability check
+        prediction_proba = review_model.predict_proba(transformed_review)[0]
+        is_fake = prediction_proba[1] > 0.5  # Threshold at 50%
+
+        logger.info(f"Review: {request.review} -> Predicted: {'Fake' if is_fake else 'Real'} with probability {prediction_proba[1]:.4f}")
+        return ReviewResponse(review=request.review, is_fake=is_fake)
+
+    except Exception as e:
+        logger.error(f"Error processing review: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Run the FastAPI app
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+    
+    
+    import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+import os
+import logging
+import secrets
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# API Key Storage File
+API_KEYS_FILE = "api_keys.csv"
+
+# Generate and store API keys securely
+def generate_api_key():
+    return secrets.token_hex(32)
+
+def store_api_key(api_key):
+    """Store a unique API key in a CSV file."""
+    if os.path.exists(API_KEYS_FILE):
+        df = pd.read_csv(API_KEYS_FILE)
+    else:
+        df = pd.DataFrame(columns=["api_key"])
+
+    if api_key not in df["api_key"].values:
+        new_entry = pd.DataFrame({"api_key": [api_key]})
+        df = pd.concat([df, new_entry], ignore_index=True)
+        df.to_csv(API_KEYS_FILE, index=False)
+        logger.info(f"Stored API key: {api_key}")
+
+def validate_api_key(api_key):
+    """Check if the API key exists in the dataset."""
+    if not os.path.exists(API_KEYS_FILE):
+        return False
+
+    df = pd.read_csv(API_KEYS_FILE)
+    return api_key in df["api_key"].values
+
+# Generate and store a new API key
+new_key = generate_api_key()
+store_api_key(new_key)
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if not validate_api_key(api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return await call_next(request)
+
+# Initialize FastAPI application with middleware
+app = FastAPI()
+app.add_middleware(APIKeyMiddleware)
+
+# Paths to model and vectorizer files
+REVIEW_MODEL_PATH = "reviewmodel.pkl"
+REVIEW_VECTORIZER_PATH = "review_vectorizer.pkl"
+REVIEW_DATASET_PATH = "review_dataset.csv"
+
+# Ensure vectorizer retraining if misaligned
+def retrain_vectorizer():
+    if not os.path.exists(REVIEW_DATASET_PATH):
+        logger.error("Review dataset missing. Cannot retrain vectorizer.")
+        raise FileNotFoundError("Review dataset is required for retraining.")
+
+    dataset = pd.read_csv(REVIEW_DATASET_PATH)
+
+    vectorizer = TfidfVectorizer(max_features=1768)
+    vectorizer.fit(dataset["review"])
+    joblib.dump(vectorizer, REVIEW_VECTORIZER_PATH)
+
+    logger.info(f"Vectorizer retrained with {len(vectorizer.get_feature_names_out())} features.")
+
+# Retrain model
+def retrain_model():
+    if not os.path.exists(REVIEW_DATASET_PATH):
+        logger.error("Review dataset missing. Cannot retrain model.")
+        raise FileNotFoundError("Review dataset is required for model training.")
+
+    dataset = pd.read_csv(REVIEW_DATASET_PATH)
+
+    vectorizer = joblib.load(REVIEW_VECTORIZER_PATH)
+    X = vectorizer.transform(dataset["review"])
+    y = dataset["label"].astype(int)  # Ensure labels are numeric
+
+    model = LogisticRegression()
+    model.fit(X, y)
+
+    joblib.dump(model, REVIEW_MODEL_PATH)
+    logger.info("Model retrained successfully.")
+
+# Load models and vectorizers
+def load_model_and_vectorizer(model_path, vectorizer_path, model_name):
+    if not os.path.exists(model_path) or not os.path.exists(vectorizer_path):
+        logger.warning(f"{model_name} files missing, attempting retraining.")
+        retrain_vectorizer()
+        retrain_model()
+
+    try:
+        model = joblib.load(model_path)
+        vectorizer = joblib.load(vectorizer_path)
+
+        # Verify alignment
+        sample_text = ["Test review"]
+        test_vectorized = vectorizer.transform(sample_text)
+        expected_features = 1768
+
+        if test_vectorized.shape[1] != expected_features:
+            logger.error(f"{model_name} feature mismatch: Found {test_vectorized.shape[1]}, expected {expected_features}")
+            retrain_vectorizer()
+            retrain_model()
+            vectorizer = joblib.load(vectorizer_path)
+            model = joblib.load(model_path)
+
+        return model, vectorizer
+
+    except Exception as e:
+        logger.error(f"Error loading {model_name}: {str(e)}")
+        raise RuntimeError(f"Failed to load {model_name}: {str(e)}")
+
+# Load models
+review_model, review_vectorizer = load_model_and_vectorizer(REVIEW_MODEL_PATH, REVIEW_VECTORIZER_PATH, "Review Detection")
+
+class ReviewRequest(BaseModel):
+    review: str
+
+class ReviewResponse(BaseModel):
+    review: str
+    is_fake: bool
+
+@app.post("/detect_fake_review", response_model=ReviewResponse)
+async def detect_fake_review(request: ReviewRequest):
+    try:
+        if not request.review.strip():
+            raise HTTPException(status_code=400, detail="Review cannot be empty.")
+
+        # Transform the review
+        transformed_review = review_vectorizer.transform([request.review])
+        logger.info(f"Transformed review feature count: {transformed_review.shape[1]}")
+
+        # Validate feature count
+        expected_features = 1768
+        if transformed_review.shape[1] != expected_features:
+            logger.error(f"Feature mismatch detected: Expected {expected_features}, Found {transformed_review.shape[1]}")
+            retrain_vectorizer()
+            retrain_model()
+            transformed_review = review_vectorizer.transform([request.review])
+
+        # Predict with probability check
+        prediction_proba = review_model.predict_proba(transformed_review)[0]
+        is_fake = prediction_proba[1] > 0.5  # Threshold at 50%
+
+        logger.info(f"Review: {request.review} -> Predicted: {'Fake' if is_fake else 'Real'} with probability {prediction_proba[1]:.4f}")
+        return ReviewResponse(review=request.review, is_fake=is_fake)
+
+    except Exception as e:
+        logger.error(f"Error processing review: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Run the FastAPI app
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
+
+# Ensure vectorizer retraining if misaligned
+def retrain_vectorizer():
+    if not os.path.exists(REVIEW_DATASET_PATH):
+        logger.error("Review dataset missing. Cannot retrain vectorizer.")
+        raise FileNotFoundError("Review dataset is required for retraining.")
+
+    dataset = pd.read_csv(REVIEW_DATASET_PATH)
+
+
+    
+    
+    
+
+except Exception as e:
+logger.error(f"Error loading {model_name}: {str(e)}")
+raise RuntimeError(f"Failed to load {model_name}: {str(e)}")
+
+
+import joblib
+import pandas as pd
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+import os
+import logging
+import secrets
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# API Key Storage File
+API_KEYS_FILE = "api_keys.csv"
+
+# Generate and store API keys securely
+def generate_api_key():
+    return secrets.token_hex(32)
+
+def store_api_key(api_key):
+    """Store a unique API key in a CSV file."""
+    if os.path.exists(API_KEYS_FILE):
+        df = pd.read_csv(API_KEYS_FILE)
+    else:
+        df = pd.DataFrame(columns=["api_key"])
+
+    if api_key not in df["api_key"].values:
+        new_entry = pd.DataFrame({"api_key": [api_key]})
+        df = pd.concat([df, new_entry], ignore_index=True)
+        df.to_csv(API_KEYS_FILE, index=False)
+        logger.info(f"Stored API key: {api_key}")
+
+def validate_api_key(api_key):
+    """Check if the API key exists in the dataset."""
+    if not os.path.exists(API_KEYS_FILE):
+        return False
+
+    df = pd.read_csv(API_KEYS_FILE)
+    return api_key in df["api_key"].values
+
+# Generate and store a new API key
+new_key = generate_api_key()
+store_api_key(new_key)
+
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        api_key = request.headers.get("X-API-Key")
+        if not validate_api_key(api_key):
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        return await call_next(request)
+
+# Initialize FastAPI application with middleware
+app = FastAPI()
+app.add_middleware(APIKeyMiddleware)
+
+# Paths to model and vectorizer files
+REVIEW_MODEL_PATH = "reviewmodel.pkl"
+REVIEW_VECTORIZER_PATH = "review_vectorizer.pkl"
+REVIEW_DATASET_PATH = "review_dataset.csv"
+
+# Clean dataset to remove NaN values
+dataset = pd.read_csv(REVIEW_DATASET_PATH)
+dataset = dataset.dropna(subset=["review"])
+dataset["review"] = dataset["review"].astype(str)
+dataset.to_csv(REVIEW_DATASET_PATH, index=False)
+logger.info("Dataset cleaned successfully!")
+
+# Ensure vectorizer retraining if misaligned
+def retrain_vectorizer():
+    if not os.path.exists(REVIEW_DATASET_PATH):
+        logger.error("Review dataset missing. Cannot retrain vectorizer.")
+        raise FileNotFoundError("Review dataset is required for retraining.")
+
+    dataset = pd.read_csv(REVIEW_DATASET_PATH)
+
+    vectorizer = TfidfVectorizer(max_features=1768)
+    vectorizer.fit(dataset["review"])
+    joblib.dump(vectorizer, REVIEW_VECTORIZER_PATH)
+
+    logger.info(f"Vectorizer retrained with {len(vectorizer.get_feature_names_out())} features.")
+
+# Load models and vectorizer
+def load_model_and_vectorizer(model_path, vectorizer_path, model_name):
+    if not os.path.exists(model_path) or not os.path.exists(vectorizer_path):
+        logger.warning(f"{model_name} vectorizer missing, attempting retraining.")
+        retrain_vectorizer()
+
+    try:
+        model = joblib.load(model_path)
+        vectorizer = joblib.load(vectorizer_path)
+
+        # Verify alignment
+        sample_text = ["Test review"]
+        test_vectorized = vectorizer.transform(sample_text)
+        expected_features = 1768
+
+        if test_vectorized.shape[1] != expected_features:
+            logger.error(f"{model_name} feature mismatch: Found {test_vectorized.shape[1]}, expected {expected_features}")
+            retrain_vectorizer()
+            vectorizer = joblib.load(vectorizer_path)
+
+        return model, vectorizer
+
+    except Exception as e:
+        logger.error(f"Error loading {model_name}: {str(e)}")
+        raise RuntimeError(f"Failed to load {model_name}: {str(e)}")
+
+# Load models
+review_model, review_vectorizer = load_model_and_vectorizer(REVIEW_MODEL_PATH, REVIEW_VECTORIZER_PATH, "Review Detection")
+
+class ReviewRequest(BaseModel):
+    review: str
+
+class ReviewResponse(BaseModel):
+    review: str
+    is_fake: bool
+
+@app.post("/detect_fake_review", response_model=ReviewResponse)
+async def detect_fake_review(request: ReviewRequest):
+    try:
+        if not request.review.strip():
+            raise HTTPException(status_code=400, detail="Review cannot be empty.")
+
+        # Transform the review
+        transformed_review = review_vectorizer.transform([request.review])
+        logger.info(f"Transformed review feature count: {transformed_review.shape[1]}")
+
+        # Validate feature count
+        expected_features = 1768
+        if transformed_review.shape[1] != expected_features:
+            logger.error(f"Feature mismatch detected: Expected {expected_features}, Found {transformed_review.shape[1]}")
+            retrain_vectorizer()
+            transformed_review = review_vectorizer.transform([request.review])
+
+        # Predict with probability check
+        prediction_proba = review_model.predict_proba(transformed_review)[0]
+        is_fake = prediction_proba[1] > 0.5  # Threshold at 50%
+
+        logger.info(f"Review: {request.review} -> Predicted: {'Fake' if is_fake else 'Real'} with probability {prediction_proba[1]:.4f}")
+        return ReviewResponse(review=request.review, is_fake=is_fake)
+
+    except Exception as e:
+        logger.error(f"Error processing review: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+# Run the FastAPI app
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)
